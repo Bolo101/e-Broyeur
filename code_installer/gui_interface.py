@@ -68,7 +68,12 @@ class DiskEraserGUI:
         self.active_disk = get_active_disk()
 
         self.active_drive_logged = False
+        # Ensemble des disques actuellement occupés par une opération (effacement
+        # OU formatage), partagé entre tous les lots lancés en parallèle.
         self._erasing_devs: set = set()
+        # Verrou protégeant les accès concurrents à _erasing_devs depuis les
+        # différents threads d'effacement/formatage lancés en parallèle.
+        self._busy_lock = threading.Lock()
         self._disk_row_cache: Dict[str, dict] = {}
         self._disk_rows: Dict[str, dict] = {}
         self._progress_phase_var = tk.StringVar(value="En attente")
@@ -843,9 +848,23 @@ class DiskEraserGUI:
             pass
 
     def format_only(self) -> None:
-        selected_disks = [disk for disk, var in self.disk_vars.items() if var.get()]
-        if not selected_disks:
+        with self._busy_lock:
+            requested_disks = [disk for disk, var in self.disk_vars.items() if var.get()]
+            selected_disks = [d for d in requested_disks if d not in self._erasing_devs]
+            skipped_disks = [d for d in requested_disks if d in self._erasing_devs]
+
+        if not requested_disks:
             messagebox.showwarning('Avertissement', 'Aucun disque sélectionné.')
+            return
+
+        if skipped_disks:
+            skipped_str = '\n'.join(d.replace('/dev/', '') for d in skipped_disks)
+            messagebox.showwarning(
+                'Disque(s) déjà occupé(s)',
+                f"Les disques suivants sont déjà en cours de traitement et ont été ignorés :\n\n{skipped_str}",
+            )
+
+        if not selected_disks:
             return
 
         disk_identifiers = []
@@ -881,6 +900,10 @@ class DiskEraserGUI:
         ):
             return
 
+        with self._busy_lock:
+            self._erasing_devs.update(selected_disks)
+        self.refresh_disks()
+
         self._set_status('Préparation du formatage…', 'busy')
         self._progress_phase_var.set('Formatage')
         self._progress_detail_var.set('Préparation des tâches de formatage')
@@ -898,6 +921,9 @@ class DiskEraserGUI:
             messagebox.showerror('Erreur de thread', error_msg)
             self.update_gui_log(error_msg)
             log_error(error_msg)
+            with self._busy_lock:
+                self._erasing_devs.difference_update(selected_disks)
+            self.refresh_disks()
             self._set_status('Prêt', 'idle')
 
     def format_disks_thread(self, disks, fs_choice, disk_labels=None, partition_table="mbr"):
@@ -929,10 +955,20 @@ class DiskEraserGUI:
                         error_msg = f"Erreur lors du formatage du disque {disk} : {str(e)}"
                         self.update_gui_log(error_msg)
                         log_error(error_msg)
+                    finally:
+                        with self._busy_lock:
+                            self._erasing_devs.discard(disk)
+                        self.refresh_disks()
         except Exception as e:
             error_msg = f"Erreur du pool de threads pendant le formatage : {str(e)}"
             self.update_gui_log(error_msg)
             log_error(error_msg)
+        finally:
+            # Filet de sécurité : ne libère que les disques de CE lot, jamais
+            # ceux d'un autre lot d'effacement/formatage lancé en parallèle.
+            with self._busy_lock:
+                self._erasing_devs.difference_update(disks)
+            self.refresh_disks()
         log_info('Format process completed')
         # ── FIX : délégation au thread principal pour garantir l'ordre log → popup ──
         self.root.after(0, self._on_format_complete)
@@ -1278,9 +1314,23 @@ class DiskEraserGUI:
         return disk_labels
 
     def start_erasure(self) -> None:
-        selected_disks = [disk for disk, var in self.disk_vars.items() if var.get()]
-        if not selected_disks:
+        with self._busy_lock:
+            requested_disks = [disk for disk, var in self.disk_vars.items() if var.get()]
+            selected_disks = [d for d in requested_disks if d not in self._erasing_devs]
+            skipped_disks = [d for d in requested_disks if d in self._erasing_devs]
+
+        if not requested_disks:
             messagebox.showwarning('Avertissement', 'Aucun disque sélectionné.')
+            return
+
+        if skipped_disks:
+            skipped_str = '\n'.join(d.replace('/dev/', '') for d in skipped_disks)
+            messagebox.showwarning(
+                'Disque(s) déjà occupé(s)',
+                f"Les disques suivants sont déjà en cours de traitement et ont été ignorés :\n\n{skipped_str}",
+            )
+
+        if not selected_disks:
             return
 
         active_disk_selected = any(
@@ -1367,7 +1417,8 @@ class DiskEraserGUI:
                 return
 
         disk_labels = self._resolve_labels(selected_disks)
-        self._erasing_devs = set(selected_disks)
+        with self._busy_lock:
+            self._erasing_devs.update(selected_disks)
         self.disk_progress = {disk: 0.0 for disk in selected_disks}
         self._progress_phase_var.set('Effacement en cours')
         self._progress_detail_var.set('Initialisation des tâches')
@@ -1387,7 +1438,11 @@ class DiskEraserGUI:
             messagebox.showerror('Erreur de thread', error_msg)
             self.update_gui_log(error_msg)
             log_error(error_msg)
-            self._erasing_devs.clear()
+            with self._busy_lock:
+                self._erasing_devs.difference_update(selected_disks)
+            for disk in selected_disks:
+                self.disk_progress.pop(disk, None)
+            self.refresh_disks()
             self._set_status('Prêt', 'idle')
 
     def progress_state(self, disks: List[str], fs_choice: str, passes: int,
@@ -1423,14 +1478,16 @@ class DiskEraserGUI:
                         future.result()
                         completed_disks += 1
                         self.disk_progress[disk] = 100.0
-                        self._erasing_devs.discard(disk)
+                        with self._busy_lock:
+                            self._erasing_devs.discard(disk)
                         self._recompute_global_progress()
                         self._progress_stats_var.set(f"{completed_disks}/{total_disks} terminé{'s' if completed_disks > 1 else ''}")
                         self._progress_detail_var.set(f"Terminé : {disk.replace('/dev/', '')}")
                         self._set_status(f"Effacement : {completed_disks}/{total_disks} terminé", 'busy')
                         self.refresh_disks()
                     except Exception as e:
-                        self._erasing_devs.discard(disk)
+                        with self._busy_lock:
+                            self._erasing_devs.discard(disk)
                         error_msg = f"Erreur lors du traitement du disque {disk} : {str(e)}"
                         self.update_gui_log(error_msg)
                         log_error(error_msg)
@@ -1440,8 +1497,12 @@ class DiskEraserGUI:
             self.update_gui_log(error_msg)
             log_error(error_msg)
         finally:
-            self._erasing_devs.clear()
-            self.disk_progress = {}
+            # Filet de sécurité : ne retire que les disques de CE lot, jamais
+            # ceux d'un autre lot d'effacement/formatage lancé en parallèle.
+            with self._busy_lock:
+                self._erasing_devs.difference_update(disks)
+            for disk in disks:
+                self.disk_progress.pop(disk, None)
             self.refresh_disks()
 
         log_info('Erasure process completed')
