@@ -859,11 +859,7 @@ class DiskEraserGUI:
 
         if skipped_disks:
             skipped_str = '\n'.join(d.replace('/dev/', '') for d in skipped_disks)
-            messagebox.showwarning(
-                'Disque(s) déjà occupé(s)',
-                f"Les disques suivants sont déjà en cours de traitement et ont été ignorés :\n\n{skipped_str}",
-            )
-
+            
         if not selected_disks:
             return
 
