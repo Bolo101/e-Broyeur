@@ -569,16 +569,6 @@ class DiskEraserGUI:
             fg='#ff8f8c',
         ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 0))
 
-        self._action_button(
-            inner,
-            '✕ QUITTER',
-            self.exit_application,
-            bg=self._SURFACE2,
-            hover_bg=self._SURFACE3,
-            fg=self._TEXT_DIM,
-        ).pack(fill=tk.X, pady=(0, 2))
-
-        self.root.protocol('WM_DELETE_WINDOW', self.exit_application)
         self.update_method_options()
         self._update_label_options()
         self._set_status('Prêt', 'idle')
@@ -1382,13 +1372,6 @@ class DiskEraserGUI:
             self.update_gui_log(error_msg)
             log_error(error_msg)
             self._set_status('Prêt', 'idle')
-
-    def exit_application(self) -> None:
-        exit_message = "Application fermée par l'utilisateur via le bouton Quitter"
-        log_info(exit_message)
-        self.update_gui_log(exit_message)
-        session_end()
-        self.root.destroy()
 
     def toggle_fullscreen(self) -> None:
         try:
