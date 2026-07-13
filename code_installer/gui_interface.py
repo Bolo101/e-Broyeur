@@ -133,6 +133,20 @@ class DiskEraserGUI:
             background=[('active', '#2a5080'), ('pressed', '#163050')],
             foreground=[('active', 'white'), ('pressed', 'white')],
         )
+        style.configure(
+            'Reboot.TButton',
+            background='#3d4f66',
+            foreground='white',
+            font=('Segoe UI', 10, 'bold'),
+            borderwidth=0,
+            padding=(12, 7),
+            relief='flat',
+        )
+        style.map(
+            'Reboot.TButton',
+            background=[('active', '#4d6280'), ('pressed', '#2e3d50')],
+            foreground=[('active', 'white'), ('pressed', 'white')],
+        )
 
     def _set_status(self, text: str, tone: str = 'idle') -> None:
         color = {
@@ -538,6 +552,13 @@ class DiskEraserGUI:
             text='◆  Administration',
             command=self._open_admin,
             style='Admin.TButton',
+        ).pack(fill=tk.X, pady=3)
+
+        ttk.Button(
+            inner,
+            text='⟲  Redémarrer',
+            command=self._on_reboot_clicked,
+            style='Reboot.TButton',
         ).pack(fill=tk.X, pady=3)
 
         self._update_wipe_counter()
@@ -1270,6 +1291,21 @@ class DiskEraserGUI:
             self.passes_var.set(str(get_passes()))
         except Exception:
             pass
+
+    def _on_reboot_clicked(self) -> None:
+        if self._erasing_devs:
+            messagebox.showwarning(
+                'Effacement en cours',
+                'Impossible de redémarrer pendant un effacement de disque. '
+                'Attendez la fin de l’opération, puis réessayez.',
+                parent=self.root,
+            )
+            return
+        if not messagebox.askyesno('Redémarrer', 'Redémarrer la machine maintenant ?', parent=self.root):
+            return
+        import subprocess as _sp
+        log_info('Redémarrage système demandé via le bouton Redémarrer.')
+        _sp.run(['systemctl', 'reboot'], check=False)
 
     def _block_close(self) -> None:
         messagebox.showinfo(
