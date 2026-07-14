@@ -1,18 +1,31 @@
+#!/usr/bin/env python3
 """
 config_manager.py – Gestion du mot de passe administrateur et des paramètres.
-Stocke un hash PBKDF2-SHA256 + sel + paramètres dans /etc/disk_eraser/admin.conf (root:root 600).
+
+- Les paramètres applicatifs restent stockés dans /etc/disk_eraser/admin.conf
+- Le mot de passe administrateur est stocké séparément dans
+  /etc/disk_eraser/admin.cred via SecureCredentialStore
 """
-import hashlib
-import hmac
+
 import json
 import os
-import secrets
-import sys
+from typing import Tuple
 
-CONFIG_DIR  = "/etc/disk_eraser"
+from secure_credentials import SecureCredentialStore
+
+CONFIG_DIR = "/etc/disk_eraser"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "admin.conf")
+ADMIN_CRED_FILE = os.path.join(CONFIG_DIR, "admin.cred")
 
 DEFAULT_PASSES = 5
+DEFAULT_PASSWORD = "0000"
+MIN_PASSWORD_LENGTH = 8
+
+_store = SecureCredentialStore(
+    path=ADMIN_CRED_FILE,
+    default_password=DEFAULT_PASSWORD,
+)
+
 
 # ── Helpers internes ───────────────────────────────────────────────────────────
 
@@ -21,7 +34,7 @@ def _read_config() -> dict:
     if not os.path.isfile(CONFIG_FILE):
         return {}
     try:
-        with open(CONFIG_FILE, "r") as f:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError, ValueError):
         return {}
@@ -32,10 +45,10 @@ def _write_config(data: dict) -> None:
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
     tmp = CONFIG_FILE + ".tmp"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
         os.chmod(tmp, 0o600)
-        os.replace(tmp, CONFIG_FILE)     # atomic
+        os.replace(tmp, CONFIG_FILE)
     except Exception:
         try:
             os.remove(tmp)
@@ -44,70 +57,65 @@ def _write_config(data: dict) -> None:
         raise
 
 
-# ── Dérivation de clé ──────────────────────────────────────────────────────────
-
-def _derive(password: str, salt: str) -> str:
-    """Retourne le hash PBKDF2-SHA256 en hexadécimal."""
-    key = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        iterations=200_000,
-    )
-    return key.hex()
-
-
 # ── API mot de passe ───────────────────────────────────────────────────────────
 
 def is_password_set() -> bool:
     """Vérifie qu'un mot de passe admin a déjà été configuré."""
-    config = _read_config()
-    return "hash" in config and "salt" in config
+    return os.path.isfile(ADMIN_CRED_FILE)
+
+
+def is_default_password() -> bool:
+    """Indique si le mot de passe administrateur est encore la valeur d'usine."""
+    return _store.is_default_password(DEFAULT_PASSWORD)
 
 
 def set_password(password: str) -> None:
     """
-    Enregistre (ou remplace) le mot de passe admin.
-    Préserve les autres paramètres existants (ex. nombre de passes).
-    Lève PermissionError si le répertoire n'est pas accessible en écriture.
+    Enregistre (ou remplace) le mot de passe admin sans vérifier l'ancien.
+    À utiliser pour l'initialisation ou les flux explicitement autorisés.
     """
-    if not password:
-        raise ValueError("Le mot de passe ne peut pas être vide.")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Le mot de passe doit comporter au moins {MIN_PASSWORD_LENGTH} caractères."
+        )
 
-    salt   = secrets.token_hex(32)
-    hashed = _derive(password, salt)
-
-    # Fusion : on préserve les clés existantes (passes, etc.)
-    config = _read_config()
-    config["hash"] = hashed
-    config["salt"] = salt
-    _write_config(config)
+    ok, message = _store.force_set_password(password)
+    if not ok:
+        raise ValueError(message)
 
 
 def verify_password(password: str) -> bool:
     """
-    Vérifie si le mot de passe fourni correspond au hash enregistré.
-    Retourne False en cas d'erreur de lecture (jamais d'exception).
+    Vérifie si le mot de passe fourni correspond au mot de passe enregistré.
+    Retourne uniquement True/False pour compatibilité.
     """
-    config = _read_config()
-    if "hash" not in config or "salt" not in config:
-        return False
-    try:
-        candidate = _derive(password, config["salt"])
-        # Comparaison en temps constant (contre les attaques temporelles)
-        return hmac.compare_digest(candidate, config["hash"])
-    except (KeyError, ValueError):
-        return False
+    ok, _wait = _store.verify(password)
+    return ok
+
+
+def verify_password_with_wait(password: str) -> Tuple[bool, int]:
+    """
+    Vérifie le mot de passe et retourne (ok, wait_seconds).
+    - ok=True, wait=0 : mot de passe correct
+    - ok=False, wait=0 : mot de passe incorrect
+    - ok=False, wait>0 : verrouillage temporaire en cours
+    """
+    return _store.verify(password)
 
 
 def change_password(old_password: str, new_password: str) -> None:
     """
     Change le mot de passe après vérification de l'ancien.
-    Lève ValueError si l'ancien mot de passe est incorrect.
+    Lève ValueError en cas d'erreur fonctionnelle.
     """
-    if not verify_password(old_password):
-        raise ValueError("Ancien mot de passe incorrect.")
-    set_password(new_password)
+    if len(new_password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(
+            f"Le nouveau mot de passe doit comporter au moins {MIN_PASSWORD_LENGTH} caractères."
+        )
+
+    ok, message = _store.change_password(old_password, new_password)
+    if not ok:
+        raise ValueError(message)
 
 
 # ── API paramètres d'effacement ────────────────────────────────────────────────
