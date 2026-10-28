@@ -9,7 +9,7 @@
 set -e
 
 # ── Variables ──────────────────────────────────────────────────────────────────
-ISO_NAME="$(pwd)/e-Broyeur-v7.1-32bits.iso"
+ISO_NAME="$(pwd)/e-Broyeur-v7.2-32bits.iso"
 WORK_DIR="$(pwd)/debian-live-build"
 CODE_DIR="$(pwd)/../../code"
 
@@ -252,7 +252,7 @@ DEFAULT live
 TIMEOUT 100
 PROMPT 0
 
-MENU TITLE e-Broyeur v7.1 (32-bit) - Mode Live
+MENU TITLE e-Broyeur v7.2 (32-bit) - Mode Live
 
 LABEL live
   MENU LABEL > Demarrer (mode live)
